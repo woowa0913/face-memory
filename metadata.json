@@ -1,0 +1,7 @@
+{
+  "name": "Share FaceMem: Team Memorizer",
+  "description": "A mobile-first spaced-repetition learning app to memorize new team members' faces and names. Features face cropping, AI-powered hints, and smart scheduling.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
