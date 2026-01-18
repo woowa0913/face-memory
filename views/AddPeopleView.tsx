@@ -81,8 +81,6 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
       }
     } catch (e) {
       console.error(e);
-    } catch (e) {
-      console.error(e);
       const errorMessage = e instanceof Error ? e.message : "알 수 없는 오류";
       alert(`이미지 분석 중 오류가 발생했습니다:\n${errorMessage}`);
     }
