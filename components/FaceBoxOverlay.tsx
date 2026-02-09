@@ -8,6 +8,7 @@ interface FaceBoxOverlayProps {
     onUpdateFace: (index: number, newBox: [number, number, number, number]) => void;
     onAddFace: (newBox: [number, number, number, number]) => void;
     onDeleteFace: (index: number) => void;
+    onInteractionEnd: (index: number) => void;
 }
 
 export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
@@ -18,6 +19,7 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
     onUpdateFace,
     onAddFace,
     onDeleteFace,
+    onInteractionEnd,
 }) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
@@ -28,7 +30,7 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
     const [currentBox, setCurrentBox] = useState<[number, number, number, number] | null>(null); // For creation only
 
     const getMousePos = (e: React.MouseEvent | MouseEvent) => {
-        if (!containerRef.current || !imgRef.current) return { x: 0, y: 0 };
+        if (!containerRef.current || !imgRef.current) return { x: 0, y: 0, width: 0, height: 0 };
         const rect = containerRef.current.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
@@ -100,8 +102,12 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
             const face = faces[selectedFaceIndex];
             let [ymin, xmin, ymax, xmax] = face.box_2d;
 
-            const normY = toNorm(y, height);
-            const normX = toNorm(x, width);
+            // Clamp mouse position to image bounds
+            const clampedY = Math.max(0, Math.min(height, y));
+            const clampedX = Math.max(0, Math.min(width, x));
+
+            const normY = toNorm(clampedY, height);
+            const normX = toNorm(clampedX, width);
 
             if (isResizing === 'tl') { ymin = normY; xmin = normX; }
             if (isResizing === 'tr') { ymin = normY; xmax = normX; }
@@ -123,23 +129,26 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
             const face = faces[selectedFaceIndex];
             const [ymin, xmin, ymax, xmax] = face.box_2d;
 
-            const normDy = toNorm(dy, height) - toNorm(0, height); // roughly
-            const normDx = toNorm(dx, width) - toNorm(0, width);
-
-            // We need better delta calculation to avoid drift/snap
-            // Convert current box to pixels, add delta, convert back
+            // Calculate new positions in pixels first to handle clamping correctly
             const pxYmin = fromNorm(ymin, height);
             const pxXmin = fromNorm(xmin, width);
             const pxYmax = fromNorm(ymax, height);
             const pxXmax = fromNorm(xmax, width);
 
-            const newPxYmin = pxYmin + dy;
-            const newPxXmin = pxXmin + dx;
-            const newPxYmax = pxYmax + dy;
-            const newPxXmax = pxXmax + dx;
+            let newPxYmin = pxYmin + dy;
+            let newPxXmin = pxXmin + dx;
+            let newPxYmax = pxYmax + dy;
+            let newPxXmax = pxXmax + dx;
+
+            // Box dimensions
+            const boxW = pxXmax - pxXmin;
+            const boxH = pxYmax - pxYmin;
 
             // Clamp to image bounds
-            // TODO: Improve clamping logic
+            if (newPxXmin < 0) { newPxXmin = 0; newPxXmax = boxW; }
+            if (newPxYmin < 0) { newPxYmin = 0; newPxYmax = boxH; }
+            if (newPxXmax > width) { newPxXmax = width; newPxXmin = width - boxW; }
+            if (newPxYmax > height) { newPxYmax = height; newPxYmin = height - boxH; }
 
             onUpdateFace(selectedFaceIndex, [
                 toNorm(newPxYmin, height),
@@ -153,10 +162,14 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
             const startX = dragStart.x;
             const startY = dragStart.y;
 
-            const pxYmin = Math.min(startY, y);
-            const pxXmin = Math.min(startX, x);
-            const pxYmax = Math.max(startY, y);
-            const pxXmax = Math.max(startX, x);
+            // Clamp mouse position
+            const clampedY = Math.max(0, Math.min(height, y));
+            const clampedX = Math.max(0, Math.min(width, x));
+
+            const pxYmin = Math.min(startY, clampedY);
+            const pxXmin = Math.min(startX, clampedX);
+            const pxYmax = Math.max(startY, clampedY);
+            const pxXmax = Math.max(startX, clampedX);
 
             setCurrentBox([
                 toNorm(pxYmin, height),
@@ -174,7 +187,11 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
             if (Math.abs(ymax - ymin) > 20 && Math.abs(xmax - xmin) > 20) {
                 onAddFace(currentBox);
             }
+        } else if ((isDragging || isResizing) && selectedFaceIndex !== null) {
+            // Trigger interaction end only when dragging or resizing finishes
+            onInteractionEnd(selectedFaceIndex);
         }
+
         setIsDragging(false);
         setIsResizing(null);
         setIsCreating(false);
@@ -185,7 +202,7 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
     return (
         <div
             ref={containerRef}
-            className="relative w-full h-full select-none"
+            className="relative w-full h-auto select-none"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
@@ -259,3 +276,4 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
         </div>
     );
 };
+

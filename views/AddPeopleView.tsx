@@ -429,9 +429,9 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
         </div>
       ) : (
         <div className="space-y-6">
-          <div className="relative rounded-xl overflow-hidden shadow-md bg-black h-[500px] flex justify-center bg-gray-900 group">
-            {/* Overlay Component */}
-            <div className="absolute inset-0 z-10">
+          <div className="relative rounded-xl shadow-md bg-black bg-gray-900 group">
+            {/* Overlay Component in Scrollable Area */}
+            <div className="max-h-[70vh] overflow-y-auto overflow-x-hidden relative">
               <FaceBoxOverlay
                 imageSrc={imageSrc}
                 faces={faces.map(f => ({ id: f.id, box_2d: f.box_2d || [0, 0, 0, 0] }))}
