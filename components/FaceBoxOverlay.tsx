@@ -2,13 +2,19 @@ import React, { useState, useRef, useEffect } from 'react';
 
 interface FaceBoxOverlayProps {
     imageSrc: string;
-    faces: { id?: string; box_2d: [number, number, number, number] }[]; // [ymin, xmin, ymax, xmax] 0-1000
+    faces: {
+        id?: string;
+        box_2d: [number, number, number, number];
+        info_box_2d?: [number, number, number, number];
+    }[]; // [ymin, xmin, ymax, xmax] 0-1000
     selectedFaceIndex: number | null;
     onSelectFace: (index: number | null) => void;
     onUpdateFace: (index: number, newBox: [number, number, number, number]) => void;
+    onUpdateInfoBox?: (index: number, newBox: [number, number, number, number]) => void;
     onAddFace: (newBox: [number, number, number, number]) => void;
     onDeleteFace: (index: number) => void;
     onInteractionEnd: (index: number) => void;
+    onInfoInteractionEnd?: (index: number) => void;
 }
 
 export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
@@ -17,15 +23,23 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
     selectedFaceIndex,
     onSelectFace,
     onUpdateFace,
+    onUpdateInfoBox,
     onAddFace,
     onDeleteFace,
     onInteractionEnd,
+    onInfoInteractionEnd
 }) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
+
+    // Interaction State
     const [isDragging, setIsDragging] = useState(false);
     const [isResizing, setIsResizing] = useState<string | null>(null); // 'tl', 'tr', 'bl', 'br'
-    const [isCreating, setIsCreating] = useState(false);
+    const [createMode, setCreateMode] = useState(false);
+
+    // Track what we are editing: 'face' | 'info'
+    const [editTarget, setEditTarget] = useState<'face' | 'info'>('face');
+
     const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
     const [currentBox, setCurrentBox] = useState<[number, number, number, number] | null>(null); // For creation only
 
@@ -34,62 +48,87 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
         const rect = containerRef.current.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
-
-        // Normalize to 0-1000 based on image natural size is NOT needed here for display
-        // But we need to convert display px to 0-1000 for callbacks
         return { x, y, width: rect.width, height: rect.height };
     };
 
     const toNorm = (val: number, max: number) => Math.max(0, Math.min(1000, Math.round((val / max) * 1000)));
     const fromNorm = (val: number, max: number) => (val / 1000) * max;
 
+    const HANDLE_SIZE = 10;
+
     const handleMouseDown = (e: React.MouseEvent) => {
         e.preventDefault();
         const { x, y, width, height } = getMousePos(e);
 
-        // 1. Check if clicking on a resize handle of the selected box
+        // 1. Check if clicking on selected face's handles or body (Face OR Info)
         if (selectedFaceIndex !== null) {
             const face = faces[selectedFaceIndex];
-            const [ymin, xmin, ymax, xmax] = face.box_2d;
-            const pxYmin = fromNorm(ymin, height);
-            const pxXmin = fromNorm(xmin, width);
-            const pxYmax = fromNorm(ymax, height);
-            const pxXmax = fromNorm(xmax, width);
 
-            const HANDLE_SIZE = 10;
+            // Check Info Box First (z-index logic: whatever is on top, but let's prioritize info if it exists/overlaps)
+            // Actually, we should check both.
 
-            // Check handles
-            if (Math.abs(x - pxXmin) < HANDLE_SIZE && Math.abs(y - pxYmin) < HANDLE_SIZE) { setIsResizing('tl'); return; }
-            if (Math.abs(x - pxXmax) < HANDLE_SIZE && Math.abs(y - pxYmin) < HANDLE_SIZE) { setIsResizing('tr'); return; }
-            if (Math.abs(x - pxXmin) < HANDLE_SIZE && Math.abs(y - pxYmax) < HANDLE_SIZE) { setIsResizing('bl'); return; }
-            if (Math.abs(x - pxXmax) < HANDLE_SIZE && Math.abs(y - pxYmax) < HANDLE_SIZE) { setIsResizing('br'); return; }
+            // Helper to check hit
+            const checkHit = (box: [number, number, number, number], type: 'face' | 'info') => {
+                const [ymin, xmin, ymax, xmax] = box;
+                const pxYmin = fromNorm(ymin, height);
+                const pxXmin = fromNorm(xmin, width);
+                const pxYmax = fromNorm(ymax, height);
+                const pxXmax = fromNorm(xmax, width);
 
-            // Check if clicking inside the selected box (to move)
-            if (x >= pxXmin && x <= pxXmax && y >= pxYmin && y <= pxYmax) {
-                setIsDragging(true);
+                // Resize Handles
+                if (Math.abs(x - pxXmin) < HANDLE_SIZE && Math.abs(y - pxYmin) < HANDLE_SIZE) return { hit: true, action: 'resize', handle: 'tl', type };
+                if (Math.abs(x - pxXmax) < HANDLE_SIZE && Math.abs(y - pxYmin) < HANDLE_SIZE) return { hit: true, action: 'resize', handle: 'tr', type };
+                if (Math.abs(x - pxXmin) < HANDLE_SIZE && Math.abs(y - pxYmax) < HANDLE_SIZE) return { hit: true, action: 'resize', handle: 'bl', type };
+                if (Math.abs(x - pxXmax) < HANDLE_SIZE && Math.abs(y - pxYmax) < HANDLE_SIZE) return { hit: true, action: 'resize', handle: 'br', type };
+
+                // Body (Move)
+                if (x >= pxXmin && x <= pxXmax && y >= pxYmin && y <= pxYmax) return { hit: true, action: 'move', type };
+
+                return null;
+            };
+
+            // IF info box exists, check it
+            if (face.info_box_2d) {
+                const infoHit = checkHit(face.info_box_2d, 'info');
+                if (infoHit) {
+                    setEditTarget('info');
+                    if (infoHit.action === 'resize') setIsResizing(infoHit.handle!);
+                    else setIsDragging(true);
+                    setDragStart({ x, y });
+                    return;
+                }
+            }
+
+            // Check Face Box
+            const faceHit = checkHit(face.box_2d, 'face');
+            if (faceHit) {
+                setEditTarget('face');
+                if (faceHit.action === 'resize') setIsResizing(faceHit.handle!);
+                else setIsDragging(true);
                 setDragStart({ x, y });
                 return;
             }
         }
 
-        // 2. Check if clicking on any OTHER box (to select)
-        // iterate in reverse to select top-most
+        // 2. Check ANY other face box to select
         for (let i = faces.length - 1; i >= 0; i--) {
             const face = faces[i];
             const [ymin, xmin, ymax, xmax] = face.box_2d;
+
             if (x >= fromNorm(xmin, width) && x <= fromNorm(xmax, width) &&
                 y >= fromNorm(ymin, height) && y <= fromNorm(ymax, height)) {
+
                 onSelectFace(i);
-                // Start dragging immediately if needed, or just select
+                setEditTarget('face'); // Default to face when selecting new
                 setIsDragging(true);
                 setDragStart({ x, y });
                 return;
             }
         }
 
-        // 3. If clicking empty space, start creating
+        // 3. Create New Face
         onSelectFace(null);
-        setIsCreating(true);
+        setCreateMode(true);
         setDragStart({ x, y });
         setCurrentBox([toNorm(y, height), toNorm(x, width), toNorm(y, height), toNorm(x, width)]);
     };
@@ -98,70 +137,77 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
         if (!containerRef.current) return;
         const { x, y, width, height } = getMousePos(e);
 
-        if (isResizing && selectedFaceIndex !== null) {
+        if ((isDragging || isResizing) && selectedFaceIndex !== null && dragStart) {
             const face = faces[selectedFaceIndex];
-            let [ymin, xmin, ymax, xmax] = face.box_2d;
+            // Determine which box we are editing
+            const targetBox = editTarget === 'face' ? face.box_2d : face.info_box_2d;
+            if (!targetBox) return; // Should not happen if logic is correct
 
-            // Clamp mouse position to image bounds
-            const clampedY = Math.max(0, Math.min(height, y));
-            const clampedX = Math.max(0, Math.min(width, x));
+            let [ymin, xmin, ymax, xmax] = targetBox;
 
-            const normY = toNorm(clampedY, height);
-            const normX = toNorm(clampedX, width);
+            if (isResizing) {
+                // Clamp mouse position
+                const clampedY = Math.max(0, Math.min(height, y));
+                const clampedX = Math.max(0, Math.min(width, x));
 
-            if (isResizing === 'tl') { ymin = normY; xmin = normX; }
-            if (isResizing === 'tr') { ymin = normY; xmax = normX; }
-            if (isResizing === 'bl') { ymax = normY; xmin = normX; }
-            if (isResizing === 'br') { ymax = normY; xmax = normX; }
+                const normY = toNorm(clampedY, height);
+                const normX = toNorm(clampedX, width);
 
-            // Ensure min < max
-            // (Simple swap if dragged past)
-            const newYmin = Math.min(ymin, ymax);
-            const newYmax = Math.max(ymin, ymax);
-            const newXmin = Math.min(xmin, xmax);
-            const newXmax = Math.max(xmin, xmax);
+                if (isResizing === 'tl') { ymin = normY; xmin = normX; }
+                if (isResizing === 'tr') { ymin = normY; xmax = normX; }
+                if (isResizing === 'bl') { ymax = normY; xmin = normX; }
+                if (isResizing === 'br') { ymax = normY; xmax = normX; }
 
-            onUpdateFace(selectedFaceIndex, [newYmin, newXmin, newYmax, newXmax]);
-        } else if (isDragging && selectedFaceIndex !== null && dragStart) {
-            const dx = x - dragStart.x;
-            const dy = y - dragStart.y;
+                // Swap check
+                const newYmin = Math.min(ymin, ymax);
+                const newYmax = Math.max(ymin, ymax);
+                const newXmin = Math.min(xmin, xmax);
+                const newXmax = Math.max(xmin, xmax);
 
-            const face = faces[selectedFaceIndex];
-            const [ymin, xmin, ymax, xmax] = face.box_2d;
+                const newBox: [number, number, number, number] = [newYmin, newXmin, newYmax, newXmax];
 
-            // Calculate new positions in pixels first to handle clamping correctly
-            const pxYmin = fromNorm(ymin, height);
-            const pxXmin = fromNorm(xmin, width);
-            const pxYmax = fromNorm(ymax, height);
-            const pxXmax = fromNorm(xmax, width);
+                if (editTarget === 'face') onUpdateFace(selectedFaceIndex, newBox);
+                else if (onUpdateInfoBox) onUpdateInfoBox(selectedFaceIndex, newBox);
+            }
+            else if (isDragging) {
+                const dx = x - dragStart.x;
+                const dy = y - dragStart.y;
 
-            let newPxYmin = pxYmin + dy;
-            let newPxXmin = pxXmin + dx;
-            let newPxYmax = pxYmax + dy;
-            let newPxXmax = pxXmax + dx;
+                const pxYmin = fromNorm(ymin, height);
+                const pxXmin = fromNorm(xmin, width);
+                const pxYmax = fromNorm(ymax, height);
+                const pxXmax = fromNorm(xmax, width);
 
-            // Box dimensions
-            const boxW = pxXmax - pxXmin;
-            const boxH = pxYmax - pxYmin;
+                let newPxYmin = pxYmin + dy;
+                let newPxXmin = pxXmin + dx;
+                let newPxYmax = pxYmax + dy;
+                let newPxXmax = pxXmax + dx;
 
-            // Clamp to image bounds
-            if (newPxXmin < 0) { newPxXmin = 0; newPxXmax = boxW; }
-            if (newPxYmin < 0) { newPxYmin = 0; newPxYmax = boxH; }
-            if (newPxXmax > width) { newPxXmax = width; newPxXmin = width - boxW; }
-            if (newPxYmax > height) { newPxYmax = height; newPxYmin = height - boxH; }
+                const boxW = pxXmax - pxXmin;
+                const boxH = pxYmax - pxYmin;
 
-            onUpdateFace(selectedFaceIndex, [
-                toNorm(newPxYmin, height),
-                toNorm(newPxXmin, width),
-                toNorm(newPxYmax, height),
-                toNorm(newPxXmax, width)
-            ]);
-            setDragStart({ x, y });
-        } else if (isCreating && dragStart) {
-            // Update currentBox for rendering the preview
+                // Clamp
+                if (newPxXmin < 0) { newPxXmin = 0; newPxXmax = boxW; }
+                if (newPxYmin < 0) { newPxYmin = 0; newPxYmax = boxH; }
+                if (newPxXmax > width) { newPxXmax = width; newPxXmin = width - boxW; }
+                if (newPxYmax > height) { newPxYmax = height; newPxYmin = height - boxH; }
+
+                const newBox: [number, number, number, number] = [
+                    toNorm(newPxYmin, height),
+                    toNorm(newPxXmin, width),
+                    toNorm(newPxYmax, height),
+                    toNorm(newPxXmax, width)
+                ];
+
+                if (editTarget === 'face') onUpdateFace(selectedFaceIndex, newBox);
+                else if (onUpdateInfoBox) onUpdateInfoBox(selectedFaceIndex, newBox);
+
+                setDragStart({ x, y });
+            }
+        } else if (createMode && dragStart) {
+            // ... (Creation Logic same as before)
             const startX = dragStart.x;
             const startY = dragStart.y;
-
             // Clamp mouse position
             const clampedY = Math.max(0, Math.min(height, y));
             const clampedX = Math.max(0, Math.min(width, x));
@@ -181,22 +227,106 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
     };
 
     const handleMouseUp = () => {
-        if (isCreating && currentBox) {
-            // Check if box is big enough
+        if (createMode && currentBox) {
             const [ymin, xmin, ymax, xmax] = currentBox;
             if (Math.abs(ymax - ymin) > 20 && Math.abs(xmax - xmin) > 20) {
                 onAddFace(currentBox);
             }
-        } else if ((isDragging || isResizing) && selectedFaceIndex !== null) {
-            // Trigger interaction end only when dragging or resizing finishes
-            onInteractionEnd(selectedFaceIndex);
+        }
+        else if ((isDragging || isResizing) && selectedFaceIndex !== null) {
+            if (editTarget === 'face') {
+                onInteractionEnd(selectedFaceIndex);
+            } else if (editTarget === 'info' && onInfoInteractionEnd) {
+                onInfoInteractionEnd(selectedFaceIndex);
+            }
         }
 
         setIsDragging(false);
         setIsResizing(null);
-        setIsCreating(false);
+        setCreateMode(false);
         setDragStart(null);
         setCurrentBox(null);
+    };
+
+    // Render Helper
+    const renderBox = (
+        box: [number, number, number, number],
+        type: 'face' | 'info',
+        idx: number,
+        isSelected: boolean
+    ) => {
+        const [ymin, xmin, ymax, xmax] = box;
+        // Colors
+        // Face: Indigo (Normal), Yellow (Selected)
+        // Info: Green (Normal), Bright Green (Selected)
+
+        let borderColor = 'border-indigo-500/50';
+        let hoverColor = 'hover:border-indigo-400';
+        let selectedColor = 'border-yellow-400';
+
+        if (type === 'info') {
+            borderColor = 'border-green-500/50';
+            hoverColor = 'hover:border-green-400';
+            selectedColor = 'border-green-400';
+        }
+
+        const isBoxSelected = isSelected && editTarget === type;
+        // Note: When a face is selected, we show both boxes. 
+        // But only the one we clicked recently (or default face) gets the "active editing" handles.
+        // Let's simplify: If the person is selected, BOTH boxes are visible.
+        // The one corresponding to editTarget gets the handles.
+
+        // If this person is NOT selected, we only show Face box usually? 
+        // Requirement: "번호는 얼굴하고 같게해서 같은 얼굴과 정보를 매칭할 수 있게 해줘."
+        // Let's show Info box always if it exists, or maybe alpha it out if not selected.
+
+        const isActive = isSelected && (editTarget === type); // This specific box is being edited
+
+        return (
+            <div
+                key={`${type}-${idx}`}
+                className={`absolute border-2 ${isSelected ? (isActive ? `${selectedColor} z-20` : `${borderColor} z-10 border-dashed`) : `${borderColor} z-0 ${hoverColor}`}`}
+                style={{
+                    top: `${ymin / 10}%`,
+                    left: `${xmin / 10}%`,
+                    height: `${(ymax - ymin) / 10}%`,
+                    width: `${(xmax - xmin) / 10}%`,
+                    cursor: isSelected ? 'move' : 'pointer'
+                }}
+            >
+                {isSelected && (
+                    <>
+                        {/* Handles - Only if "Active" editing target */}
+                        {isActive && (
+                            <>
+                                <div className={`absolute -top-1.5 -left-1.5 w-3 h-3 ${type === 'face' ? 'bg-yellow-400' : 'bg-green-400'} rounded-full cursor-nw-resize`} />
+                                <div className={`absolute -top-1.5 -right-1.5 w-3 h-3 ${type === 'face' ? 'bg-yellow-400' : 'bg-green-400'} rounded-full cursor-ne-resize`} />
+                                <div className={`absolute -bottom-1.5 -left-1.5 w-3 h-3 ${type === 'face' ? 'bg-yellow-400' : 'bg-green-400'} rounded-full cursor-sw-resize`} />
+                                <div className={`absolute -bottom-1.5 -right-1.5 w-3 h-3 ${type === 'face' ? 'bg-yellow-400' : 'bg-green-400'} rounded-full cursor-se-resize`} />
+                            </>
+                        )}
+
+                        {/* Delete Button - Only on Face Box */}
+                        {type === 'face' && (
+                            <button
+                                className="absolute -top-8 right-0 bg-red-500 text-white text-xs px-2 py-1 rounded shadow pointer-events-auto hover:bg-red-600"
+                                onMouseDown={(e) => {
+                                    e.stopPropagation();
+                                    onDeleteFace(idx);
+                                }}
+                            >
+                                삭제
+                            </button>
+                        )}
+                    </>
+                )}
+
+                {/* Number Indicator - Show on both to match */}
+                <div className={`absolute top-0 left-0 ${type === 'face' ? 'bg-black/50' : 'bg-green-700/70'} text-white text-[10px] px-1 pointer-events-none`}>
+                    {idx + 1} {type === 'info' && '정보'}
+                </div>
+            </div>
+        );
     };
 
     return (
@@ -215,54 +345,18 @@ export const FaceBoxOverlay: React.FC<FaceBoxOverlayProps> = ({
                 className="w-full h-auto pointer-events-none display-block"
             />
 
-            {/* Existing Faces */}
             {faces.map((face, idx) => {
                 const isSelected = idx === selectedFaceIndex;
-                const [ymin, xmin, ymax, xmax] = face.box_2d;
-
                 return (
-                    <div
-                        key={face.id || idx}
-                        className={`absolute border-2 ${isSelected ? 'border-yellow-400 z-10' : 'border-indigo-500/50 hover:border-indigo-400 z-0'}`}
-                        style={{
-                            top: `${ymin / 10}%`,
-                            left: `${xmin / 10}%`,
-                            height: `${(ymax - ymin) / 10}%`,
-                            width: `${(xmax - xmin) / 10}%`,
-                            cursor: isSelected ? 'move' : 'pointer'
-                        }}
-                    >
-                        {isSelected && (
-                            <>
-                                {/* Resize Handles */}
-                                <div className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-yellow-400 rounded-full cursor-nw-resize" />
-                                <div className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-yellow-400 rounded-full cursor-ne-resize" />
-                                <div className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-yellow-400 rounded-full cursor-sw-resize" />
-                                <div className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-yellow-400 rounded-full cursor-se-resize" />
-
-                                {/* Delete Button */}
-                                <button
-                                    className="absolute -top-8 right-0 bg-red-500 text-white text-xs px-2 py-1 rounded shadow pointer-events-auto hover:bg-red-600"
-                                    onMouseDown={(e) => {
-                                        e.stopPropagation(); // prevent drag start
-                                        onDeleteFace(idx);
-                                    }}
-                                >
-                                    삭제
-                                </button>
-                            </>
-                        )}
-
-                        {/* Number Indicator */}
-                        <div className="absolute top-0 left-0 bg-black/50 text-white text-[10px] px-1 pointer-events-none">
-                            {idx + 1}
-                        </div>
-                    </div>
+                    <React.Fragment key={face.id || idx}>
+                        {renderBox(face.box_2d, 'face', idx, isSelected)}
+                        {face.info_box_2d && renderBox(face.info_box_2d, 'info', idx, isSelected)}
+                    </React.Fragment>
                 );
             })}
 
             {/* Creation Preview */}
-            {isCreating && currentBox && (
+            {createMode && currentBox && (
                 <div
                     className="absolute border-2 border-green-500 bg-green-500/20 z-20"
                     style={{

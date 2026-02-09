@@ -20,13 +20,16 @@ export interface Person {
   notes: string; // Specifics, hobbies, etc.
   gender?: 'M' | 'F' | 'U'; // Male, Female, Unknown
   faceCropId: string;
-  
+
+  // Manual Info Box for Text Extraction
+  info_box_2d?: [number, number, number, number]; // [ymin, xmin, ymax, xmax] 0-1000
+
   // SRS (Spaced Repetition) Stats
   interval: number; // Days until next review
   repetition: number; // Consecutive correct answers
   efactor: number; // Easiness factor (SM-2)
   dueDate: number; // Timestamp for next review
-  
+
   createdAt: number;
 }
 

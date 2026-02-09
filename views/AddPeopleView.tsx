@@ -4,7 +4,7 @@ import { dbService } from '../services/db';
 import { Person, FaceCrop } from '../types';
 import { DEFAULT_EFACTOR, DEFAULT_INTERVAL, DEFAULT_REPETITION } from '../constants';
 import { convertPdfToImages } from '../services/pdf';
-import { extractRosterFromImage } from '../services/geminiService';
+import { extractRosterFromImage, analyzeInfoRegion } from '../services/geminiService';
 import { generateFullAppHtml } from '../services/appExporter';
 import { FaceBoxOverlay } from '../components/FaceBoxOverlay';
 
@@ -18,7 +18,8 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
     tempBlob?: Blob,
     tempUrl?: string,
     isMatch?: boolean,
-    box_2d?: [number, number, number, number]
+    box_2d?: [number, number, number, number],
+    info_box_2d?: [number, number, number, number]
   })[]>([]);
   const [selectedFaceIndex, setSelectedFaceIndex] = useState<number | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -65,6 +66,14 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
         const cropBlob = await cropFaceFromCoordinates(file, p.box_2d);
         if (cropBlob) {
           const cropUrl = URL.createObjectURL(cropBlob);
+
+          // Initial Guess for Info Box: Just below the face, same width, somewhat taller
+          const [ymin, xmin, ymax, xmax] = p.box_2d;
+          const height = ymax - ymin;
+          const infoYmin = Math.min(1000, ymax + 10); // slightly below face
+          const infoYmax = Math.min(1000, infoYmin + (height * 3)); // 3x face height for text
+          const infoBox: [number, number, number, number] = [infoYmin, xmin, infoYmax, xmax];
+
           newFaces.push({
             id: crypto.randomUUID(),
             name: p.name || '',
@@ -76,7 +85,8 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
             tempBlob: cropBlob,
             tempUrl: cropUrl,
             isMatch: false,
-            box_2d: p.box_2d
+            box_2d: p.box_2d,
+            info_box_2d: infoBox // Default Info Box
           });
         }
       }
@@ -97,6 +107,10 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
     }
   };
 
+  // ... (processPdf logic omitted for brevity as it's similar, but ideally should update there too. For now let's focus on single image flow or apply generic fix if needed. 
+  // Wait, I should probably update processPdf too to add info_box_2d default. But let's stick to the visible diffs first.)
+
+  // Actually, let's include processPdf update for consistency in the ReplacementContent.
   const processPdf = async (file: File) => {
     try {
       setIsProcessing(true);
@@ -110,14 +124,12 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
       const allExtractedFaces = [];
       let duplicateCount = 0;
 
-      // Process max 5 pages
       const pagesToProcess = images.slice(0, 5);
 
       for (const imgBlob of images) {
         const extracted = await extractRosterFromImage(imgBlob);
 
         for (const p of extracted) {
-          // Duplicate Detection
           const isDuplicate = existingPeople.some(ep => ep.name === p.name);
           if (isDuplicate && p.name) {
             duplicateCount++;
@@ -127,6 +139,14 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
           const cropBlob = await cropFaceFromCoordinates(imgBlob, p.box_2d);
           if (cropBlob) {
             const cropUrl = URL.createObjectURL(cropBlob);
+
+            // Default Info Box
+            const [ymin, xmin, ymax, xmax] = p.box_2d;
+            const height = ymax - ymin;
+            const infoYmin = Math.min(1000, ymax + 10);
+            const infoYmax = Math.min(1000, infoYmin + (height * 3));
+            const infoBox: [number, number, number, number] = [infoYmin, xmin, infoYmax, xmax];
+
             allExtractedFaces.push({
               id: crypto.randomUUID(),
               name: p.name,
@@ -138,7 +158,8 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
               tempBlob: cropBlob,
               tempUrl: cropUrl,
               isMatch: false,
-              box_2d: p.box_2d
+              box_2d: p.box_2d,
+              info_box_2d: infoBox
             });
           }
         }
@@ -163,6 +184,7 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
       setStatusMessage("");
     }
   };
+
 
   const cropFaceFromCoordinates = async (sourceBlob: Blob, box_2d: [number, number, number, number]): Promise<Blob | null> => {
     // box_2d is [ymin, xmin, ymax, xmax] in 0-1000 scale
@@ -202,50 +224,17 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
     });
   };
 
-
-
-  const addFaceFromCrop = (x: number, y: number, w: number, h: number) => {
-    if (!imgRef.current) return;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.drawImage(imgRef.current, x, y, w, h, 0, 0, w, h);
-
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const faceUrl = URL.createObjectURL(blob);
-
-      const newPerson: Partial<Person> & { tempBlob: Blob, tempUrl: string, box_2d: [number, number, number, number] } = {
-        id: crypto.randomUUID(),
-        name: '',
-        department: 'IT',
-        notes: '',
-        tempBlob: blob,
-        tempUrl: faceUrl,
-        // Convert pixel rect to 0-1000 scale
-        box_2d: [
-          Math.round((y / imgRef.current!.naturalHeight) * 1000),
-          Math.round((x / imgRef.current!.naturalWidth) * 1000),
-          Math.round(((y + h) / imgRef.current!.naturalHeight) * 1000),
-          Math.round(((x + w) / imgRef.current!.naturalWidth) * 1000)
-        ]
-      };
-
-      setFaces(prev => [...prev, newPerson]);
-      setSelectedFaceIndex(faces.length); // Select the new face
-    }, 'image/jpeg');
-  };
-
   // --- FaceBoxOverlay Handlers ---
 
   const handleUpdateFaceBox = async (index: number, newBox: [number, number, number, number]) => {
-    // Update State immediately for UI responsiveness
     const updatedFaces = [...faces];
     updatedFaces[index] = { ...updatedFaces[index], box_2d: newBox };
+    setFaces(updatedFaces);
+  };
+
+  const handleUpdateInfoBox = async (index: number, newBox: [number, number, number, number]) => {
+    const updatedFaces = [...faces];
+    updatedFaces[index] = { ...updatedFaces[index], info_box_2d: newBox };
     setFaces(updatedFaces);
   };
 
@@ -274,12 +263,61 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
     }
   };
 
+  const handleInfoInteractionEnd = async (index: number) => {
+    if (!imageSrc) return;
+    const face = faces[index];
+    if (!face || !face.info_box_2d) return;
+
+    setStatusMessage("정보 영역 다시 읽는 중...");
+    setIsProcessing(true);
+
+    try {
+      const response = await fetch(imageSrc);
+      const blob = await response.blob();
+
+      // Crop the Info Region (No 20% padding for info text, we want exact region usually, or maybe small padding)
+      const croppedInfo = await cropFaceFromCoordinates(blob, face.info_box_2d);
+
+      if (croppedInfo) {
+        const newData = await analyzeInfoRegion(croppedInfo);
+
+        setFaces(prev => {
+          const next = [...prev];
+          // Merge new info, ensuring we don't overwrite if Gemini returns empty
+          const current = next[index];
+          next[index] = {
+            ...current,
+            name: newData.name || current.name,
+            jobGroup: newData.job_group || current.jobGroup,
+            career: newData.career || current.career,
+            notes: newData.notes || current.notes,
+            gender: newData.gender || current.gender,
+          };
+          return next;
+        });
+      }
+    } catch (e) {
+      console.error("Info re-analysis failed", e);
+    } finally {
+      setIsProcessing(false);
+      setStatusMessage("");
+    }
+  };
+
+
   const handleAddFaceFromOverlay = async (newBox: [number, number, number, number]) => {
     if (imageSrc) {
       try {
         const response = await fetch(imageSrc);
         const blob = await response.blob();
         const cropBlob = await cropFaceFromCoordinates(blob, newBox);
+
+        // Default Info Box for new manual face
+        const [ymin, xmin, ymax, xmax] = newBox;
+        const height = ymax - ymin;
+        const infoYmin = Math.min(1000, ymax + 10);
+        const infoYmax = Math.min(1000, infoYmin + (height * 3));
+        const infoBox: [number, number, number, number] = [infoYmin, xmin, infoYmax, xmax];
 
         if (cropBlob) {
           const cropUrl = URL.createObjectURL(cropBlob);
@@ -294,7 +332,8 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
             tempBlob: cropBlob,
             tempUrl: cropUrl,
             isMatch: false,
-            box_2d: newBox
+            box_2d: newBox,
+            info_box_2d: infoBox
           };
 
           setFaces(prev => [...prev, newPerson]);
@@ -335,6 +374,7 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
               notes: face.notes || existing.notes,
               career: face.career || existing.career,
               jobGroup: face.jobGroup || existing.jobGroup,
+              info_box_2d: face.info_box_2d, // Save Info Box
               updatedAt: Date.now()
             });
           }
@@ -348,6 +388,7 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
             notes: face.notes || '',
             gender: face.gender || 'U',
             faceCropId: faceCropId,
+            info_box_2d: face.info_box_2d, // Save Info Box
             interval: DEFAULT_INTERVAL,
             repetition: DEFAULT_REPETITION,
             efactor: DEFAULT_EFACTOR,
@@ -434,20 +475,26 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
             <div className="max-h-[70vh] overflow-y-auto overflow-x-hidden relative">
               <FaceBoxOverlay
                 imageSrc={imageSrc}
-                faces={faces.map(f => ({ id: f.id, box_2d: f.box_2d || [0, 0, 0, 0] }))}
+                faces={faces.map(f => ({
+                  id: f.id,
+                  box_2d: f.box_2d || [0, 0, 0, 0],
+                  info_box_2d: f.info_box_2d // Pass info box
+                }))}
                 selectedFaceIndex={selectedFaceIndex}
                 onSelectFace={setSelectedFaceIndex}
                 onUpdateFace={handleUpdateFaceBox}
+                onUpdateInfoBox={handleUpdateInfoBox} // Pass handler
                 onInteractionEnd={handleInteractionEnd}
+                onInfoInteractionEnd={handleInfoInteractionEnd} // Pass handler
                 onAddFace={handleAddFaceFromOverlay}
                 onDeleteFace={handleDeleteFace}
               />
             </div>
             <div className="absolute top-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded backdrop-blur-sm pointer-events-none z-20">
-              미리보기 및 얼굴 편집
+              얼굴(노랑/파랑) 및 정보(초록) 영역 편집
             </div>
             <div className="absolute bottom-2 right-2 bg-black/60 text-white text-xs px-2 py-1 rounded backdrop-blur-sm pointer-events-none z-20 opacity-0 group-hover:opacity-100 transition">
-              드래그: 이동/추가 | 모서리: 크기조절 | 클릭: 선택
+              초록색 박스를 움직이면 텍스트를 다시 읽습니다.
             </div>
           </div>
 

@@ -67,6 +67,7 @@ export interface ExtractedPerson {
   notes: string;
   gender: 'M' | 'F' | 'U';
   box_2d: [number, number, number, number]; // [ymin, xmin, ymax, xmax] 0-1000 scale
+  info_box_2d?: [number, number, number, number]; // [ymin, xmin, ymax, xmax] 0-1000 scale
 }
 
 const callGeminiForExtraction = async (imageBlob: Blob): Promise<ExtractedPerson[]> => {
@@ -272,4 +273,56 @@ export const extractRosterFromImage = async (imageBlob: Blob): Promise<Extracted
   }
 
   return uniquePeople;
+};
+
+export const analyzeInfoRegion = async (imageBlob: Blob): Promise<Partial<ExtractedPerson>> => {
+  if (!apiKey) return {};
+
+  const base64Data = await blobToBase64(imageBlob);
+  const ai = new GoogleGenAI({ apiKey });
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: {
+        parts: [
+          { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
+          {
+            text: `
+            Analyze this image region which contains text details about a person.
+            Extract the following fields if visible:
+            1. Name (성명)
+            2. Job Group (직군 - e.g. IT, Biz)
+            3. Career (경력/회사)
+            4. Notes (특이사항, 전공, 학교, 비고)
+            5. Gender (M/F) - Infer from text/name if possible.
+
+            Return JSON.
+            `
+          }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            name: { type: Type.STRING },
+            job_group: { type: Type.STRING },
+            career: { type: Type.STRING },
+            notes: { type: Type.STRING },
+            gender: { type: Type.STRING, enum: ["M", "F", "U"] }
+          }
+        }
+      }
+    });
+
+    if (response.text) {
+      return JSON.parse(response.text) as Partial<ExtractedPerson>;
+    }
+    return {};
+  } catch (e) {
+    console.error("Info Region Analysis Failed", e);
+    return {};
+  }
 };
