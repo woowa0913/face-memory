@@ -6,6 +6,7 @@ import { DEFAULT_EFACTOR, DEFAULT_INTERVAL, DEFAULT_REPETITION } from '../consta
 import { convertPdfToImages } from '../services/pdf';
 import { extractRosterFromImage } from '../services/geminiService';
 import { generateFullAppHtml } from '../services/appExporter';
+import { FaceBoxOverlay } from '../components/FaceBoxOverlay';
 
 interface AddPeopleViewProps {
   onFinish: () => void;
@@ -13,7 +14,13 @@ interface AddPeopleViewProps {
 
 export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
   const [imageSrc, setImageSrc] = useState<string | null>(null);
-  const [faces, setFaces] = useState<(Partial<Person> & { tempBlob?: Blob, tempUrl?: string, isMatch?: boolean })[]>([]);
+  const [faces, setFaces] = useState<(Partial<Person> & {
+    tempBlob?: Blob,
+    tempUrl?: string,
+    isMatch?: boolean,
+    box_2d?: [number, number, number, number]
+  })[]>([]);
+  const [selectedFaceIndex, setSelectedFaceIndex] = useState<number | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [existingPeople, setExistingPeople] = useState<Person[]>([]);
@@ -68,7 +75,8 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
             gender: p.gender || 'U',
             tempBlob: cropBlob,
             tempUrl: cropUrl,
-            isMatch: false
+            isMatch: false,
+            box_2d: p.box_2d
           });
         }
       }
@@ -129,7 +137,8 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
               gender: p.gender || 'U',
               tempBlob: cropBlob,
               tempUrl: cropUrl,
-              isMatch: false
+              isMatch: false,
+              box_2d: p.box_2d
             });
           }
         }
@@ -193,22 +202,7 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
     });
   };
 
-  const handleManualCrop = (e: React.MouseEvent<HTMLImageElement>) => {
-    if (!imgRef.current) return;
 
-    const rect = imgRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const scaleX = imgRef.current.naturalWidth / rect.width;
-    const scaleY = imgRef.current.naturalHeight / rect.height;
-
-    const cropSize = 200;
-    const actualX = (x * scaleX) - (cropSize / 2);
-    const actualY = (y * scaleY) - (cropSize / 2);
-
-    addFaceFromCrop(actualX, actualY, cropSize, cropSize);
-  };
 
   const addFaceFromCrop = (x: number, y: number, w: number, h: number) => {
     if (!imgRef.current) return;
@@ -225,17 +219,96 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
       if (!blob) return;
       const faceUrl = URL.createObjectURL(blob);
 
-      const newPerson: Partial<Person> & { tempBlob: Blob, tempUrl: string } = {
+      const newPerson: Partial<Person> & { tempBlob: Blob, tempUrl: string, box_2d: [number, number, number, number] } = {
         id: crypto.randomUUID(),
         name: '',
         department: 'IT',
         notes: '',
         tempBlob: blob,
-        tempUrl: faceUrl
+        tempUrl: faceUrl,
+        // Convert pixel rect to 0-1000 scale
+        box_2d: [
+          Math.round((y / imgRef.current!.naturalHeight) * 1000),
+          Math.round((x / imgRef.current!.naturalWidth) * 1000),
+          Math.round(((y + h) / imgRef.current!.naturalHeight) * 1000),
+          Math.round(((x + w) / imgRef.current!.naturalWidth) * 1000)
+        ]
       };
 
       setFaces(prev => [...prev, newPerson]);
+      setSelectedFaceIndex(faces.length); // Select the new face
     }, 'image/jpeg');
+  };
+
+  // --- FaceBoxOverlay Handlers ---
+
+  const handleUpdateFaceBox = async (index: number, newBox: [number, number, number, number]) => {
+    // Update State immediately for UI responsiveness
+    const updatedFaces = [...faces];
+    updatedFaces[index] = { ...updatedFaces[index], box_2d: newBox };
+    setFaces(updatedFaces);
+  };
+
+  const handleInteractionEnd = async (index: number) => {
+    if (!imageSrc) return;
+
+    try {
+      const response = await fetch(imageSrc);
+      const blob = await response.blob();
+      const faceToRecrop = faces[index];
+      if (!faceToRecrop || !faceToRecrop.box_2d) return;
+
+      const newCropBlob = await cropFaceFromCoordinates(blob, faceToRecrop.box_2d);
+
+      if (newCropBlob) {
+        const newCropUrl = URL.createObjectURL(newCropBlob);
+
+        setFaces(prev => {
+          const next = [...prev];
+          next[index] = { ...next[index], tempBlob: newCropBlob, tempUrl: newCropUrl };
+          return next;
+        });
+      }
+    } catch (e) {
+      console.error("Failed to re-crop after interaction", e);
+    }
+  };
+
+  const handleAddFaceFromOverlay = async (newBox: [number, number, number, number]) => {
+    if (imageSrc) {
+      try {
+        const response = await fetch(imageSrc);
+        const blob = await response.blob();
+        const cropBlob = await cropFaceFromCoordinates(blob, newBox);
+
+        if (cropBlob) {
+          const cropUrl = URL.createObjectURL(cropBlob);
+          const newPerson = {
+            id: crypto.randomUUID(),
+            name: '',
+            department: '',
+            jobGroup: '',
+            career: '',
+            notes: '',
+            gender: 'U',
+            tempBlob: cropBlob,
+            tempUrl: cropUrl,
+            isMatch: false,
+            box_2d: newBox
+          };
+
+          setFaces(prev => [...prev, newPerson]);
+          setSelectedFaceIndex(faces.length);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  };
+
+  const handleDeleteFace = (index: number) => {
+    setFaces(prev => prev.filter((_, i) => i !== index));
+    setSelectedFaceIndex(null);
   };
 
   const handleSave = async () => {
@@ -356,16 +429,25 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
         </div>
       ) : (
         <div className="space-y-6">
-          <div className="relative rounded-xl overflow-hidden shadow-md bg-black">
-            <img
-              ref={imgRef}
-              src={imageSrc}
-              alt="Upload"
-              className="w-full h-auto opacity-90"
-              onClick={handleManualCrop}
-            />
-            <div className="absolute top-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded backdrop-blur-sm pointer-events-none">
-              미리보기
+          <div className="relative rounded-xl overflow-hidden shadow-md bg-black h-[500px] flex justify-center bg-gray-900 group">
+            {/* Overlay Component */}
+            <div className="absolute inset-0 z-10">
+              <FaceBoxOverlay
+                imageSrc={imageSrc}
+                faces={faces.map(f => ({ id: f.id, box_2d: f.box_2d || [0, 0, 0, 0] }))}
+                selectedFaceIndex={selectedFaceIndex}
+                onSelectFace={setSelectedFaceIndex}
+                onUpdateFace={handleUpdateFaceBox}
+                onInteractionEnd={handleInteractionEnd}
+                onAddFace={handleAddFaceFromOverlay}
+                onDeleteFace={handleDeleteFace}
+              />
+            </div>
+            <div className="absolute top-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded backdrop-blur-sm pointer-events-none z-20">
+              미리보기 및 얼굴 편집
+            </div>
+            <div className="absolute bottom-2 right-2 bg-black/60 text-white text-xs px-2 py-1 rounded backdrop-blur-sm pointer-events-none z-20 opacity-0 group-hover:opacity-100 transition">
+              드래그: 이동/추가 | 모서리: 크기조절 | 클릭: 선택
             </div>
           </div>
 
@@ -383,7 +465,12 @@ export const AddPeopleView: React.FC<AddPeopleViewProps> = ({ onFinish }) => {
             )}
 
             {faces.map((face, idx) => (
-              <div key={idx} className="flex flex-col gap-3 p-3 bg-gray-50 rounded-lg border border-gray-100 animate-fadeIn">
+              <div
+                key={idx}
+                onClick={() => setSelectedFaceIndex(idx)}
+                className={`flex flex-col gap-3 p-3 rounded-lg border animate-fadeIn transition cursor-pointer ${selectedFaceIndex === idx ? 'bg-indigo-50 border-indigo-300 ring-2 ring-indigo-200' : 'bg-gray-50 border-gray-100 hover:bg-gray-100'
+                  }`}
+              >
                 <div className="flex gap-4">
                   <div className="w-16 h-16 rounded-full overflow-hidden bg-gray-200 flex-shrink-0 border border-gray-200">
                     {/* @ts-ignore tempUrl exists */}

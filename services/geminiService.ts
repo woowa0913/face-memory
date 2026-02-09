@@ -86,13 +86,15 @@ const callGeminiForExtraction = async (imageBlob: Blob): Promise<ExtractedPerson
             Analyze this image. It is either a formal roster (grid) OR a natural group photo.
             
             Task:
-            1. Detect EVERY face in the image.
+            1. Detect EVERY face in the image, no matter how small, blurry, or partially obscured.
             2. Extract text associated with each person if available.
             
             CRITICAL INSTRUCTION FOR FACE DETECTION:
-            - Provide the bounding box for the **FACE ONLY**.
+            - Provide the bounding box for the **FULL HEAD**. include hair and chin.
             - Do not include the shoulders or torso.
             - The bounding box must be TIGHT around the head.
+            - Even if the face is not looking at the camera, detect it.
+            - Avoid "false negatives". If it looks like a face, detect it.
             - box_2d format is [ymin, xmin, ymax, xmax] in 0-1000 normalized coordinates.
             
             Extract fields (if text is available near the face):
